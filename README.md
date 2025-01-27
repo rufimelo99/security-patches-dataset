@@ -23,10 +23,15 @@ Datasets that only consider vulnerabilities with patches available through GitHu
 
 ### Installation
 
-Configure environment to run the scripts:
+Configure environment:
 
 ```bash
-conda create --name sec-patches --file requirements.txt
+./install
+```
+
+Activate environment:
+
+```bash
 conda activate sec-patches
 ```
 
