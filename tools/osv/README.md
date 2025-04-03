@@ -38,7 +38,7 @@ This script will retrieve and process all the data for the different ecosystems.
 The dataset is available through Google Drive. Download our google drive mirror by running the following command:
    
 ```bash
-gdown https://drive.google.com/uc?id=1_n08wgdyEFT-j53f_gzUpDbQBMMFDqKW
+gdown "https://drive.google.com/uc?id=1_n08wgdyEFT-j53f_gzUpDbQBMMFDqKW"
 ```
 
 ### 2. Generate Dataset
