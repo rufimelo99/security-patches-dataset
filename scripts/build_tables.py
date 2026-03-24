@@ -312,6 +312,174 @@ def build_vuln_and_cvss_tables(osv_entries, nvd_entries):
     return vuln_df, cvss_df, uf
 
 
+# ---------- Affected packages ----------
+
+def build_affected_packages(osv_entries, uf):
+    """Build affected_packages.csv from OSV entries."""
+    rows = []
+    for entry in osv_entries:
+        entry_id = entry.get("id", "")
+        vuln_id = uf.find(entry_id)
+        # Prefer CVE as canonical
+        for m in sorted(uf.groups().get(uf.find(entry_id), set())):
+            if m.startswith("CVE-"):
+                vuln_id = m
+                break
+
+        for affected in entry.get("affected", []):
+            pkg = affected.get("package", {})
+            package_name = pkg.get("name", "")
+            ecosystem = pkg.get("ecosystem", entry.get("_ecosystem", ""))
+            purl = pkg.get("purl", "")
+
+            versions_affected = affected.get("versions")
+
+            for rng in affected.get("ranges", []):
+                range_type = rng.get("type", "")
+                # OSV ranges can have multiple introduced/fixed pairs:
+                # [{"introduced":"1.0"},{"fixed":"1.5"},{"introduced":"2.0"},{"fixed":"2.3"}]
+                # We emit one row per introduced/fixed pair.
+                introduced = ""
+                for event in rng.get("events", []):
+                    if "introduced" in event:
+                        # If we had a pending introduced without a fixed, emit it first
+                        if introduced:
+                            rows.append({
+                                "vuln_id": vuln_id, "package_name": package_name,
+                                "ecosystem": ecosystem, "purl": purl,
+                                "range_type": range_type,
+                                "version_introduced": introduced, "version_fixed": "",
+                                "versions_affected": json.dumps(versions_affected) if versions_affected else None,
+                            })
+                        introduced = event["introduced"]
+                    elif "fixed" in event:
+                        rows.append({
+                            "vuln_id": vuln_id, "package_name": package_name,
+                            "ecosystem": ecosystem, "purl": purl,
+                            "range_type": range_type,
+                            "version_introduced": introduced, "version_fixed": event["fixed"],
+                            "versions_affected": json.dumps(versions_affected) if versions_affected else None,
+                        })
+                        introduced = ""
+                    elif "last_affected" in event:
+                        rows.append({
+                            "vuln_id": vuln_id, "package_name": package_name,
+                            "ecosystem": ecosystem, "purl": purl,
+                            "range_type": range_type,
+                            "version_introduced": introduced, "version_fixed": "",
+                            "versions_affected": json.dumps(versions_affected) if versions_affected else None,
+                        })
+                        introduced = ""
+                # Emit trailing introduced without fixed (all versions after X are affected)
+                if introduced:
+                    rows.append({
+                        "vuln_id": vuln_id, "package_name": package_name,
+                        "ecosystem": ecosystem, "purl": purl,
+                        "range_type": range_type,
+                        "version_introduced": introduced, "version_fixed": "",
+                        "versions_affected": json.dumps(versions_affected) if versions_affected else None,
+                    })
+
+            # If no ranges but versions listed, still emit a row
+            if not affected.get("ranges") and versions_affected:
+                rows.append({
+                    "vuln_id": vuln_id,
+                    "package_name": package_name,
+                    "ecosystem": ecosystem,
+                    "purl": purl,
+                    "range_type": "",
+                    "version_introduced": "",
+                    "version_fixed": "",
+                    "versions_affected": json.dumps(versions_affected),
+                })
+
+    return pd.DataFrame(rows)
+
+
+# ---------- References ----------
+
+def classify_ref_type(url):
+    """Classify a reference URL by type based on URL pattern."""
+    if not url:
+        return "other"
+    if re.search(r"github\.com/.*/commit/", url) or re.search(r"gitlab\.com/.*/commit/", url):
+        return "commit"
+    if re.search(r"github\.com/.*/issues/", url) or re.search(r"gitlab\.com/.*/issues/", url):
+        return "issue"
+    if re.search(r"github\.com/.*/pull/", url) or re.search(r"gitlab\.com/.*merge_requests/", url):
+        return "pull_request"
+    if "advisory" in url.lower() or "ghsa" in url.lower() or "cve.org" in url:
+        return "advisory"
+    return "other"
+
+
+def extract_host(url):
+    """Extract hostname from URL."""
+    match = re.match(r"https?://([^/]+)", url)
+    return match.group(1) if match else None
+
+
+def build_references(osv_entries, nvd_entries, uf):
+    """Build references.csv from OSV + NVD entries."""
+    rows = []
+    seen = set()
+
+    # Helper to resolve canonical vuln_id
+    groups = uf.groups()
+    def get_canonical(entry_id):
+        root = uf.find(entry_id)
+        for m in sorted(groups.get(root, set())):
+            if m.startswith("CVE-"):
+                return m
+        return root
+
+    # OSV references
+    for entry in osv_entries:
+        vuln_id = get_canonical(entry.get("id", ""))
+        for ref in entry.get("references", []):
+            url = ref.get("url", "")
+            if not url:
+                continue
+            key = (vuln_id, url, "osv")
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({
+                "vuln_id": vuln_id,
+                "url": url,
+                "osv_ref_type": ref.get("type"),
+                "source": None,
+                "tags": None,
+                "ref_type": classify_ref_type(url),
+                "host": extract_host(url),
+            })
+
+    # NVD references
+    for cve in nvd_entries:
+        vuln_id = get_canonical(cve.get("id", ""))
+        for ref in cve.get("references", []):
+            url = ref.get("url", "")
+            if not url:
+                continue
+            source = ref.get("source")
+            key = (vuln_id, url, source or "nvd")
+            if key in seen:
+                continue
+            seen.add(key)
+            tags = ref.get("tags")
+            rows.append({
+                "vuln_id": vuln_id,
+                "url": url,
+                "osv_ref_type": None,
+                "source": source,
+                "tags": json.dumps(tags) if tags else None,
+                "ref_type": classify_ref_type(url),
+                "host": extract_host(url),
+            })
+
+    return pd.DataFrame(rows)
+
+
 # ---------- Main ----------
 
 def main():
@@ -323,12 +491,22 @@ def main():
     osv_entries = load_osv_entries(osv_raw_dir)
     nvd_entries = load_nvd_entries(nvd_json)
 
-    # Build vulnerabilities + cvss
+    # Build vulnerabilities + cvss (also returns union-find for reuse)
     vuln_df, cvss_df, uf = build_vuln_and_cvss_tables(osv_entries, nvd_entries)
     vuln_df.to_csv(OUTPUT_DIR / "vulnerabilities.csv", **CSV_OPTS)
     log.info("vulnerabilities.csv: %d rows", len(vuln_df))
     cvss_df.to_csv(OUTPUT_DIR / "cvss.csv", **CSV_OPTS)
     log.info("cvss.csv: %d rows", len(cvss_df))
+
+    # Build affected_packages
+    pkg_df = build_affected_packages(osv_entries, uf)
+    pkg_df.to_csv(OUTPUT_DIR / "affected_packages.csv", **CSV_OPTS)
+    log.info("affected_packages.csv: %d rows", len(pkg_df))
+
+    # Build references
+    refs_df = build_references(osv_entries, nvd_entries, uf)
+    refs_df.to_csv(OUTPUT_DIR / "references.csv", **CSV_OPTS)
+    log.info("references.csv: %d rows", len(refs_df))
 
     return vuln_df, cvss_df, uf
 
