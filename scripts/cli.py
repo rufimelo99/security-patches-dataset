@@ -14,19 +14,19 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
 def transform_to_commits(df):
-    new_df = pd.DataFrame()
+    rows = []
     for _, row in df.iterrows():
         chain = list(row["chain"])
         patch_type = "MULTI" if len(chain) > 1 else "SINGLE"
-
-        for i, _ in enumerate(chain):
-            row["commit_href"] = chain[i]
-            row["project"] = "/".join(chain[i].split("/")[0:5])
-            sha = re.sub(r"http(s)?://github.com/.*/commit(s)?/", "", chain[i])
-            row["commit_sha"] = sha
-            row["patch"] = patch_type
-            new_df = new_df.append(row, ignore_index=True)
-    return new_df
+        for commit in chain:
+            new_row = row.copy()
+            new_row["commit_href"] = commit
+            new_row["project"] = "/".join(commit.split("/")[0:5])
+            sha = re.sub(r"http(s)?://github.com/.*/commit(s)?/", "", commit)
+            new_row["commit_sha"] = sha
+            new_row["patch"] = patch_type
+            rows.append(new_row)
+    return pd.DataFrame(rows)
 
 
 def process_sources(folder):
@@ -108,24 +108,37 @@ def get_metadata(fin, folder):
     git = utils.get_token(config)
 
     fout = f"{folder}/sources_commits_metadata.csv"
+    fout_files = f"{folder}/files_raw.csv"
 
     if "message" in df.columns:
         repos = set(df[~pd.notnull(df["message"])]["project"])
     else:
         repos = set(df["project"])
 
+    all_files_rows = []
+
     for repo in repos:
 
-        print(f"📂 Getting the metadata from project {repo}...")
-        git, df = github_data.metadata(repo, df, git, config)
+        print(f"Getting the metadata from project {repo}...")
+        git, df, files_rows = github_data.metadata(repo, df, git, config)
+        all_files_rows.extend(files_rows)
 
         if "message" in df.columns:
-            print(f"{len(df[~pd.notnull(df['files'])])} entries to go")
+            print(f"{len(df[~pd.notnull(df['additions'])])} entries to go")
         else:
             print(f"{len(df)} entries to go")
 
         df.to_csv(
             fout,
+            quoting=csv.QUOTE_NONNUMERIC,
+            escapechar="\\",
+            doublequote=False,
+            index=False,
+        )
+
+    if all_files_rows:
+        pd.DataFrame(all_files_rows).to_csv(
+            fout_files,
             quoting=csv.QUOTE_NONNUMERIC,
             escapechar="\\",
             doublequote=False,
