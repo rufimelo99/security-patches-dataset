@@ -264,41 +264,55 @@ def enrich():
 # --- Phase 4: Curate ---
 
 def curate():
-    """Clean, add features, and produce final dataset."""
+    """Build flat convenience view from relational tables."""
     log.info("=== Curation phase ===")
 
-    metadata_csv = DATASET_DIR / "sources_commits_metadata.csv"
-    clean_csv = DATASET_DIR / "clean.csv"
-    final_csv = DATASET_DIR / "security_patches_v2.0.csv"
+    v2_dir = DATASET_DIR / "v2"
 
-    # Clean entries with missing messages
-    log.info("Cleaning entries with missing data...")
-    subprocess.run([
-        sys.executable, str(PROJECT_ROOT / "scripts" / "cli.py"),
-        "--task=clean",
-        f"--fin={metadata_csv}",
-        f"--fout={clean_csv}",
-        "--col=message",
-    ], check=True)
+    vulns = pd.read_csv(v2_dir / "vulnerabilities.csv", escapechar="\\")
+    commits = pd.read_csv(v2_dir / "commits.csv", escapechar="\\")
 
-    # Add language features
-    log.info("Adding language features...")
-    subprocess.run([
-        sys.executable, str(PROJECT_ROOT / "scripts" / "cli.py"),
-        "--task=collection",
-        f"--fin={clean_csv}",
-        f"--fout={final_csv}",
-        "--feature=language",
-    ], check=True)
+    files_path = v2_dir / "files.csv"
+    if files_path.exists():
+        files = pd.read_csv(files_path, escapechar="\\")
 
-    # Clean up intermediate file
-    if clean_csv.exists():
-        clean_csv.unlink()
+        # Compute primary_language per commit (most lines changed, alphabetical tiebreak)
+        file_lang = files.dropna(subset=["language"]).copy()
+        file_lang["total_lines"] = file_lang["additions"] + file_lang["deletions"]
+        lang_totals = file_lang.groupby(["commit_sha", "language"])["total_lines"].sum().reset_index()
+        lang_totals = lang_totals.sort_values(
+            ["commit_sha", "total_lines", "language"],
+            ascending=[True, False, True]
+        )
+        primary_lang = lang_totals.drop_duplicates(subset="commit_sha", keep="first")[
+            ["commit_sha", "language"]
+        ].rename(columns={"language": "primary_language"})
+    else:
+        log.warning("files.csv not found — primary_language will be empty")
+        primary_lang = pd.DataFrame(columns=["commit_sha", "primary_language"])
 
-    log.info("Final dataset: %s", final_csv)
-    df = pd.read_csv(final_csv, escapechar="\\")
-    log.info("Total entries: %d", len(df))
-    log.info("Unique CVEs: %d", df["vuln_id"].nunique())
+    # Join
+    flat = commits.merge(
+        vulns[["vuln_id", "cwe_ids", "cvss_base_score", "cvss_severity", "summary", "published_date"]],
+        on="vuln_id", how="left"
+    )
+    flat = flat.merge(primary_lang, on="commit_sha", how="left")
+
+    # Select and order columns
+    cols = [
+        "vuln_id", "cwe_ids", "cvss_base_score", "cvss_severity", "summary",
+        "published_date", "project", "commit_sha", "message", "author_name",
+        "author_date", "patch_type", "additions", "deletions", "files_changed",
+        "primary_language", "dataset",
+    ]
+    flat = flat[[c for c in cols if c in flat.columns]]
+
+    out_path = DATASET_DIR / "security_patches_v2.0.csv"
+    flat.to_csv(out_path, quoting=csv.QUOTE_NONNUMERIC, escapechar="\\",
+                doublequote=False, index=False)
+    log.info("Flat view: %d rows -> %s", len(flat), out_path)
+    if "vuln_id" in flat.columns:
+        log.info("Unique vulns: %d", flat["vuln_id"].nunique())
 
     update_phase_timestamp("curate")
 
