@@ -1,4 +1,5 @@
 import argparse
+import os
 import pandas as pd
 import re
 import utils
@@ -78,10 +79,16 @@ def process_sources(folder):
 
 
 def merge_sources(folder):
-    dfs = [
-        pd.read_csv(f"commits/{source}.csv", escapechar="\\")
-        for source in ("cve-details", "osv", "nvd")
-    ]
+    dfs = []
+    for source in ("cve-details", "osv", "nvd"):
+        path = f"commits/{source}.csv"
+        if os.path.exists(path):
+            dfs.append(pd.read_csv(path, escapechar="\\"))
+        else:
+            print(f"Skipping {path} (not found)")
+    if not dfs:
+        print("No source files found!")
+        return
     df = pd.concat(dfs, ignore_index=True)
     print(f"Total number of entries: {len(df)}")
     df.to_csv(
