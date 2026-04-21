@@ -77,3 +77,15 @@ class CachedCommit:
 
     def get_comments(self):
         return self._comments
+
+
+def fetch_commit(repo, sha, git, config, *, cache, sha_cache):
+    """Fetch a commit, checking in-memory then disk cache before hitting the API.
+
+    Returns a PyGithub Commit (on API miss) or CachedCommit (on disk hit).
+    Both expose the same attributes consumed by scripts/github_data.py.
+    """
+    sha = sha.strip()
+    if sha in sha_cache:
+        return sha_cache[sha]
+    raise NotImplementedError

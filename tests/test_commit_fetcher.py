@@ -93,3 +93,24 @@ def test_cached_commit_empty_comments_and_files():
     c = CachedCommit(data)
     assert list(c.get_comments()) == []
     assert list(c.files) == []
+
+
+from unittest.mock import MagicMock
+
+from lib.commit_fetcher import fetch_commit
+
+
+def test_fetch_commit_returns_memoized_value_without_api_call():
+    repo = MagicMock()
+    sha_cache = {}
+    cache = None
+
+    sentinel = object()
+    sha_cache["deadbeef" * 5] = sentinel
+
+    result = fetch_commit(
+        repo, "deadbeef" * 5, git=MagicMock(), config=[],
+        cache=cache, sha_cache=sha_cache,
+    )
+    assert result is sentinel
+    repo.get_commit.assert_not_called()
