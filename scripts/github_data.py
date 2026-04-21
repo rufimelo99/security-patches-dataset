@@ -13,6 +13,11 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 from github import RateLimitExceededException
 from github import UnknownObjectException
 
+from pathlib import Path as _Path
+import sys as _sys
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+from lib.commit_fetcher import fetch_commit
+
 def load_missing_commits(df, repo):
     if 'files' in df.columns:
         print(f"some entries already completed")
@@ -22,13 +27,18 @@ def load_missing_commits(df, repo):
         commits_list = df[df['project'] == repo]
     return commits_list
 
-def sort_chain(repo, chain):
+def sort_chain(repo, chain, *, git=None, config=None, cache=None, sha_cache=None):
+    if sha_cache is None:
+        sha_cache = {}
     chain_list = list(chain) if isinstance(chain, (set, list)) else list(ast.literal_eval(chain))
     rows = []
     for commit in chain_list:
         try:
             sha = commit.split('/')[-1]
-            gcommit = repo.get_commit(sha=sha.strip())
+            gcommit = fetch_commit(
+                repo, sha, git=git, config=config,
+                cache=cache, sha_cache=sha_cache,
+            )
             author = gcommit.commit.author
             rows.append({'commit': gcommit, 'datetime': author.date})
         except Exception as e:
@@ -53,7 +63,7 @@ def set_commits_info(df, idx, last_commit, chain_datetime, chain_idx):
     df.loc[idx, 'commit_datetime'] = chain_datetime[chain_idx].isoformat() + "Z"
 
 
-def metadata(repo, df, git, config, files_rows=None):
+def metadata(repo, df, git, config, files_rows=None, *, cache=None, sha_cache=None):
     if files_rows is None:
         files_rows = []
 
@@ -74,7 +84,10 @@ def metadata(repo, df, git, config, files_rows=None):
         return git, df, files_rows
 
     for idx, row in commits_list.iterrows():
-        chain_ord, chain_datetime = sort_chain(repo, row['chain'])
+        chain_ord, chain_datetime = sort_chain(
+            repo, row['chain'],
+            git=git, config=config, cache=cache, sha_cache=sha_cache,
+        )
         
         # FIXME: one of the source vulns still has the href in 
         # the commit_sha column when it reaches here. For some
@@ -89,7 +102,6 @@ def metadata(repo, df, git, config, files_rows=None):
 
         try:
             chain_ord_sha = [commit.commit.sha for commit in chain_ord]
-            print(chain_ord_sha)
             df.loc[idx, 'chain_ord'] = str(chain_ord_sha)
             if len(chain_ord) == 1:
                 last_commit = chain_ord[0]
