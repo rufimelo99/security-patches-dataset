@@ -6,6 +6,10 @@ import utils
 import datasets as data
 import normalize as norm
 import github_data
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+from lib.github_cache import GithubCache
 import csv
 import features
 
@@ -104,15 +108,17 @@ def get_metadata(fin, folder):
     df = pd.read_csv(fin, escapechar="\\")
 
     if "message" in df.columns:
-        print(
-            f"{len(df[~pd.notnull(df['files'])])} entries \
-            to go out of {len(df)}"
-        )
+        check_col = "files" if "files" in df.columns else "message"
+        remaining = len(df[~pd.notnull(df[check_col])])
+        print(f"{remaining} entries to go out of {len(df)}")
     else:
         print(f"{len(df)} entries to go")
 
     config = utils.load_config("config/github.json")
     git = utils.get_token(config)
+    cache_dir = _Path(__file__).resolve().parent.parent / "data" / "github_cache"
+    cache = GithubCache(cache_dir)
+    sha_cache = {}
 
     fout = f"{folder}/sources_commits_metadata.csv"
     fout_files = f"{folder}/files_raw.csv"
@@ -127,7 +133,10 @@ def get_metadata(fin, folder):
     for repo in repos:
 
         print(f"Getting the metadata from project {repo}...")
-        git, df, files_rows = github_data.metadata(repo, df, git, config)
+        git, df, files_rows = github_data.metadata(
+            repo, df, git, config,
+            cache=cache, sha_cache=sha_cache,
+        )
         all_files_rows.extend(files_rows)
 
         if "message" in df.columns:
@@ -151,6 +160,7 @@ def get_metadata(fin, folder):
             doublequote=False,
             index=False,
         )
+    print(f"Cache stats: {cache.stats.summary()}")
 
 
 def clean_data(fin, fout, col="message"):
