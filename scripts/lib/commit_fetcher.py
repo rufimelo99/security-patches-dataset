@@ -79,6 +79,17 @@ class CachedCommit:
         return self._comments
 
 
+def _rotate_token(config):
+    """Thin wrapper around utils.get_token so tests can patch this symbol."""
+    import sys
+    from pathlib import Path
+    scripts_dir = Path(__file__).resolve().parent.parent
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import utils  # type: ignore
+    return utils.get_token(config)
+
+
 def fetch_commit(repo, sha, git, config, *, cache, sha_cache):
     """Fetch a commit, checking in-memory then disk cache before hitting the API.
 
@@ -96,4 +107,18 @@ def fetch_commit(repo, sha, git, config, *, cache, sha_cache):
             sha_cache[sha] = obj
             return obj
 
-    raise NotImplementedError
+    try:
+        commit = repo.get_commit(sha=sha)
+    except RateLimitExceededException:
+        _rotate_token(config)
+        commit = repo.get_commit(sha=sha)
+
+    if cache is not None:
+        try:
+            data = extract_commit_data(commit)
+            cache.put(sha, data)
+        except Exception:
+            pass
+
+    sha_cache[sha] = commit
+    return commit

@@ -97,6 +97,8 @@ def test_cached_commit_empty_comments_and_files():
 
 from unittest.mock import MagicMock
 
+from github import RateLimitExceededException
+
 from lib.commit_fetcher import fetch_commit
 
 
@@ -134,3 +136,64 @@ def test_fetch_commit_disk_hit_populates_memory(tmp_path):
     assert sha in sha_cache
     assert sha_cache[sha] is result
     repo.get_commit.assert_not_called()
+
+
+def test_fetch_commit_api_miss_persists_to_both_caches(tmp_path):
+    from lib.github_cache import GithubCache
+    cache = GithubCache(tmp_path)
+    sha = "b" * 40
+
+    fake_commit = MagicMock()
+    fake_commit.sha = sha
+    fake_commit.commit.message = "hi"
+    fake_commit.commit.author.name = "Alice"
+    fake_commit.commit.author.date = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    fake_commit.commit.committer.name = "Alice"
+    fake_commit.commit.committer.date = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    fake_commit.commit.parents = []
+    fake_commit.commit.verification.verified = False
+    fake_commit.stats.additions = 1
+    fake_commit.stats.deletions = 0
+    fake_commit.stats.total = 1
+    fake_commit.files = []
+    fake_commit.get_comments.return_value = []
+
+    repo = MagicMock()
+    repo.get_commit.return_value = fake_commit
+    sha_cache = {}
+
+    result = fetch_commit(
+        repo, sha, git=MagicMock(), config=[],
+        cache=cache, sha_cache=sha_cache,
+    )
+
+    assert result is fake_commit
+    assert sha in sha_cache
+    assert cache.get(sha) is not None
+    repo.get_commit.assert_called_once_with(sha=sha)
+
+
+def test_fetch_commit_rate_limit_rotates_token(monkeypatch):
+    sha = "c" * 40
+    repo = MagicMock()
+
+    fake = MagicMock(); fake.sha = sha
+    fake.commit.message = ""
+    fake.commit.author.name = "X"; fake.commit.author.date = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    fake.commit.committer.name = "X"; fake.commit.committer.date = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    fake.commit.parents = []; fake.commit.verification.verified = False
+    fake.stats.additions = 0; fake.stats.deletions = 0; fake.stats.total = 0
+    fake.files = []; fake.get_comments.return_value = []
+    repo.get_commit.side_effect = [RateLimitExceededException(status=403, data={}, headers={}), fake]
+
+    rotated_git = MagicMock()
+    import lib.commit_fetcher as cf
+    monkeypatch.setattr(cf, "_rotate_token", lambda config: rotated_git)
+
+    result = fetch_commit(
+        repo, sha, git=MagicMock(),
+        config=[{"github_token": "x", "github_username": "y"}],
+        cache=None, sha_cache={},
+    )
+    assert result is fake
+    assert repo.get_commit.call_count == 2
