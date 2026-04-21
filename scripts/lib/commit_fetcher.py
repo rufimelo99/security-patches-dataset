@@ -88,4 +88,12 @@ def fetch_commit(repo, sha, git, config, *, cache, sha_cache):
     sha = sha.strip()
     if sha in sha_cache:
         return sha_cache[sha]
+
+    if cache is not None:
+        cached = cache.get(sha)
+        if cached is not None:
+            obj = CachedCommit(cached)
+            sha_cache[sha] = obj
+            return obj
+
     raise NotImplementedError

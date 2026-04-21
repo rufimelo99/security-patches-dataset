@@ -114,3 +114,23 @@ def test_fetch_commit_returns_memoized_value_without_api_call():
     )
     assert result is sentinel
     repo.get_commit.assert_not_called()
+
+
+def test_fetch_commit_disk_hit_populates_memory(tmp_path):
+    from lib.github_cache import GithubCache
+    cache = GithubCache(tmp_path)
+    sha = "a" * 40
+    cache.put(sha, {**SAMPLE_DATA, "sha": sha})
+
+    repo = MagicMock()
+    sha_cache = {}
+
+    result = fetch_commit(
+        repo, sha, git=MagicMock(), config=[],
+        cache=cache, sha_cache=sha_cache,
+    )
+
+    assert result.sha == sha
+    assert sha in sha_cache
+    assert sha_cache[sha] is result
+    repo.get_commit.assert_not_called()
