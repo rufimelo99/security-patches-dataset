@@ -1,10 +1,15 @@
 import argparse
+import os
 import pandas as pd
 import re
 import utils
 import datasets as data
 import normalize as norm
 import github_data
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+from lib.github_cache import GithubCache
 import csv
 import features
 
@@ -14,19 +19,19 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
 def transform_to_commits(df):
-    new_df = pd.DataFrame()
+    rows = []
     for _, row in df.iterrows():
         chain = list(row["chain"])
         patch_type = "MULTI" if len(chain) > 1 else "SINGLE"
-
-        for i, _ in enumerate(chain):
-            row["commit_href"] = chain[i]
-            row["project"] = "/".join(chain[i].split("/")[0:5])
-            sha = re.sub(r"http(s)?://github.com/.*/commit(s)?/", "", chain[i])
-            row["commit_sha"] = sha
-            row["patch"] = patch_type
-            new_df = new_df.append(row, ignore_index=True)
-    return new_df
+        for commit in chain:
+            new_row = row.copy()
+            new_row["commit_href"] = commit
+            new_row["project"] = "/".join(commit.split("/")[0:5])
+            sha = re.sub(r"http(s)?://github.com/.*/commit(s)?/", "", commit)
+            new_row["commit_sha"] = sha
+            new_row["patch"] = patch_type
+            rows.append(new_row)
+    return pd.DataFrame(rows)
 
 
 def process_sources(folder):
@@ -78,10 +83,16 @@ def process_sources(folder):
 
 
 def merge_sources(folder):
-    dfs = [
-        pd.read_csv(f"commits/{source}.csv", escapechar="\\")
-        for source in ("cve-details", "osv", "nvd")
-    ]
+    dfs = []
+    for source in ("cve-details", "osv", "nvd"):
+        path = f"commits/{source}.csv"
+        if os.path.exists(path):
+            dfs.append(pd.read_csv(path, escapechar="\\"))
+        else:
+            print(f"Skipping {path} (not found)")
+    if not dfs:
+        print("No source files found!")
+        return
     df = pd.concat(dfs, ignore_index=True)
     print(f"Total number of entries: {len(df)}")
     df.to_csv(
@@ -97,30 +108,39 @@ def get_metadata(fin, folder):
     df = pd.read_csv(fin, escapechar="\\")
 
     if "message" in df.columns:
-        print(
-            f"{len(df[~pd.notnull(df['files'])])} entries \
-            to go out of {len(df)}"
-        )
+        check_col = "files" if "files" in df.columns else "message"
+        remaining = len(df[~pd.notnull(df[check_col])])
+        print(f"{remaining} entries to go out of {len(df)}")
     else:
         print(f"{len(df)} entries to go")
 
     config = utils.load_config("config/github.json")
     git = utils.get_token(config)
+    cache_dir = _Path(__file__).resolve().parent.parent / "data" / "github_cache"
+    cache = GithubCache(cache_dir)
+    sha_cache = {}
 
     fout = f"{folder}/sources_commits_metadata.csv"
+    fout_files = f"{folder}/files_raw.csv"
 
     if "message" in df.columns:
         repos = set(df[~pd.notnull(df["message"])]["project"])
     else:
         repos = set(df["project"])
 
+    all_files_rows = []
+
     for repo in repos:
 
-        print(f"📂 Getting the metadata from project {repo}...")
-        git, df = github_data.metadata(repo, df, git, config)
+        print(f"Getting the metadata from project {repo}...")
+        git, df, files_rows = github_data.metadata(
+            repo, df, git, config,
+            cache=cache, sha_cache=sha_cache,
+        )
+        all_files_rows.extend(files_rows)
 
         if "message" in df.columns:
-            print(f"{len(df[~pd.notnull(df['files'])])} entries to go")
+            print(f"{len(df[~pd.notnull(df['additions'])])} entries to go")
         else:
             print(f"{len(df)} entries to go")
 
@@ -131,6 +151,16 @@ def get_metadata(fin, folder):
             doublequote=False,
             index=False,
         )
+
+    if all_files_rows:
+        pd.DataFrame(all_files_rows).to_csv(
+            fout_files,
+            quoting=csv.QUOTE_NONNUMERIC,
+            escapechar="\\",
+            doublequote=False,
+            index=False,
+        )
+    print(f"Cache stats: {cache.stats.summary()}")
 
 
 def clean_data(fin, fout, col="message"):
